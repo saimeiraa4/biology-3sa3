@@ -1,0 +1,105 @@
+#run PCA
+pca_all <- prcomp(PCAdata_all, scale = TRUE)
+pca_top200 <- prcomp(PCAdata_top200, scale = TRUE)
+
+# Inspect PCA
+summary(pca_all)
+summary(pca_top200)       
+
+# Scree plot 
+screeplot(pca_all, bstick = TRUE, npcs = length(pca_all$sdev), type = "lines")
+screeplot(pca_top200, bstick = TRUE, npcs = length(pca_top200$sdev), type = "lines")
+
+# Step 7: Test PC1 and PC2 using lm() and anova()
+# Extract PC scores as data frame with sample info (match rownames)
+pca_scores_all <- as.data.frame(pca_all$x)
+pca_scores_all$sname <- rownames(pca_scores_all)
+pca_scores_all <- merge(pca_scores_all, sinfo, by = "row.names")  # sinfo has rownames as sname                                                               
+
+# For top200
+pca_scores_top200 <- as.data.frame(pca_top200$x)
+pca_scores_top200$sname <- rownames(pca_scores_top200)
+pca_scores_top200 <- merge(pca_scores_top200, sinfo, by = "row.names")
+
+lm_pc1_all <- lm(PC1 ~ status_of_disease, data = pca_scores_all)
+anova(lm_pc1_all)
+summary(lm_pc1_all)
+
+lm_pc2_all <- lm(PC2 ~ status_of_disease, data = pca_scores_all)
+anova(lm_pc2_all)
+
+# Repeat for type_of_cancer
+#lm_pc1_type_all <- lm(PC1 ~ type_of_cancer, data = pca_scores_all)
+#anova(lm_pc1_type_all)
+
+# Same for top200
+lm_pc1_top200 <- lm(PC1 ~ status_of_disease, data = pca_scores_top200)
+anova(lm_pc1_top200)
+summary(lm_pc1_top200)
+
+lm_pc2_top200 <- lm(PC2 ~ status_of_disease, data = pca_scores_top200)
+anova(lm_pc2_top200)
+summary(lm_pc2_top200)
+
+# biplot
+biplot(pca_all)
+biplot(pca_top200)
+
+# Step 8: Fixed clustering on PCA scores 
+# For all sig genes
+pc_data_cluster_all <- pca_scores_all[, c("PC1", "PC2", "PC3", "PC4", "PC5")]  # Numeric PCs only; adjust as needed
+dist_matrix_all <- dist(pc_data_cluster_all)
+hclust_all <- hclust(dist_matrix_all, method = "ward.D2")
+plot(hclust_all)
+clusters_all <- cutree(hclust_all, k = 4)  # Adjust k based on dendrogram
+
+# For top200
+pc_data_cluster_top200 <- pca_scores_top200[, c("PC1", "PC2", "PC3", "PC4", "PC5")]
+dist_matrix_top <- dist(pc_data_cluster_top200)
+hclust_top <- hclust(dist_matrix_top, method = "ward.D2")
+plot(hclust_top)
+clusters_top <- cutree(hclust_top, k = 4)
+
+# Optional: Add clusters back to scores for summary
+pca_scores_top200$cluster <- clusters_top
+table(pca_scores_top200$cluster, pca_scores_top200$status_of_disease)
+
+
+# kmeans
+kmeans_all <- kmeans(pc_data_cluster_all, centers = 4)
+table(kmeans_all$cluster, pca_scores_all$status_of_disease)
+
+#Step 9: Make a heatmap (of original sig genes expression, with sample clustering)
+# Use pheatmap on normalized sig genes matrix (not transposed)
+pheatmap(stab_matrix_sig_genes,
+         scale = "row",  # Row z-score common for genes
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         annotation_col = sinfo[, c("status_of_disease", "type_of_cancer")],
+         main = "Heatmap of Significant Genes", )
+
+# Ensure colnames(stab_matrix_top200_sig_genes) == rownames(sinfo)
+annotation_col <- sinfo[colnames(stab_matrix_top200_sig_genes), c("status_of_disease", "type_of_cancer")]
+print("Annotation dim:")
+print(dim(annotation_col))  # Should match ncol(matrix) x 2
+
+pheatmap(stab_matrix_top200_sig_genes,
+         scale = "row",
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         annotation_col = annotation_col,
+         show_rownames = FALSE,
+         show_colnames = FALSE,
+         main = "Top 200 Significant Genes Heatmap",
+         fontsize_row = 8)
+
+
+top50_genes <- rownames(stab_matrix_top200_sig_genes)[1:50]
+pheatmap(stab_matrix_top50_sig_genes <- stab_matrix_top200_sig_genes[top50_genes, ],
+         scale = "row",
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         annotation_col = sinfo[colnames(stab_matrix_top50_sig_genes), c("status_of_disease", "type_of_cancer")],
+         show_rownames = FALSE,
+         fontsize = 10,
+         main = "Top 50 Sig Genes")
