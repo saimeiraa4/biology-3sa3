@@ -1,0 +1,237 @@
+#BIOLOGY 3SA3
+#Multivariate Gene Expression Analysis of Tumor-Educated Platelets to Identify Cancer Signatures
+#Workflow
+#0. Load packages
+#1. Bring in the data
+#2. Sample group labels
+#3. Use DESeq2 to a) normalize the data and b) perform differential expression analysis
+#4. Keep only the significant genes (new matrix)
+#5. Transpose the new matrix so we can run the PCA
+#6. Run PCA
+#7. Test PC1 and PC2 using lm() and anova()
+#8. Run clustering on the PCA scores
+#9. Make a heatmap
+
+#Install DESeq2 through BiocManager if you don't have it already
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install("DESeq2")
+
+#Install the package for pheatmap
+install.packages("pheatmap")
+
+rm(list=ls()) #clear current environment
+
+#SAIMIERAA's PART
+
+# Load packages
+library(tidyverse)
+library(vegan)
+library(factoextra)
+library(DESeq2) #package not mentioned in lectures
+library(pheatmap) #package not mentioned in lectures
+
+# Bring in the raw matrix (rows=genes, columns=samples)
+TEP_DATA<-read.csv("GSE68086_TEP_data_matrix.csv", header=TRUE,check.names=FALSE)
+# Bring in the series file that identifies healthy vs. cancer samples and which type they are
+SERIES_MATRIX<-read.csv("GSE68086_series_matrix.csv", header=TRUE,check.names=FALSE)
+
+# Inspection
+head(TEP_DATA)
+str(TEP_DATA)
+summary(TEP_DATA)
+
+head(SERIES_MATRIX)
+str(SERIES_MATRIX)
+summary(SERIES_MATRIX)
+
+# Creating a count matrix for format compatibility for DESeq2 and PCA
+rownames(TEP_DATA) <- TEP_DATA[,1] # Set the first column (gene names) as row names
+TEP_DATA <- TEP_DATA[,-1] # Remove the first column (gene names) from the data frame
+TEP_DATA <- as.matrix(TEP_DATA) # Convert to matrix format
+mode(TEP_DATA) <- "numeric" # Ensure the data are comprised of integers for DESeq2
+TEP_DATA<-round(TEP_DATA) # Round the data to the nearest integer for DESeq2
+head(TEP_DATA) #Check first few rows of the count matrix
+
+# Define the Sample Group Labels
+snames<-colnames(TEP_DATA) #Get the sample names from the count matrix
+sinfo<-data.frame(sname=snames) #Create a data frame with the sample names
+# Create grouping variables for healthy vs. cancer and for the different types of cancer
+# Use grepl() to classify the samples based on the names in the csv file (Lung, Breast, CRC, HC, etc)
+sinfo$status_of_disease<- ifelse(grepl("HD|Control", sinfo$sname), "Healthy", "Cancer")
+sinfo$type_of_cancer<- ifelse(grepl("HD|Control",sinfo$sname),"Healthy",
+                          ifelse(grepl("Lung|NSCLC",sinfo$sname),"Lung Cancer",
+                               ifelse(grepl("Breast|BrCa",sinfo$sname),"Breast Cancer",
+                                      ifelse(grepl("CRC",sinfo$sname),"Colorectal Cancer",
+                                             ifelse(grepl("GBM",sinfo$sname),"Glioblastoma",
+                                                    ifelse(grepl("Panc|Pancr",sinfo$sname),"Pancreatic Cancer",
+                                                           ifelse(grepl("Liver|Chol",sinfo$sname),"Hepatobiliary", NA)))))))
+# Inspection
+head(sinfo)
+summary(as.factor(sinfo$status_of_disease))
+summary(as.factor(sinfo$type_of_cancer))
+
+# Make the grouping variables factors for DESeq2
+sinfo$status_of_disease<-as.factor(sinfo$status_of_disease)
+sinfo$type_of_cancer<-as.factor(sinfo$type_of_cancer)
+rownames(sinfo)<-sinfo$sname #Set the sample names as row names for the metadata data frame
+
+# Filter out genes with low counts across all samples (keep genes with at least 10 counts in at least 10 samples)
+keep_genes <- rowSums(TEP_DATA >= 10) >= 10
+TEP_DATA_filtered <- TEP_DATA[keep_genes, ]
+
+# Compare the dimensions of the unfiltered and filtered count matrix
+dim(TEP_DATA)
+dim(TEP_DATA_filtered)
+
+# DEA with DESeq2 negative binomial test (accounts for over dispersion which is common in RNA Seq data)
+# Compare expression of the cells based on the status_of_disease variable therefore Healthy vs. Cancer
+dataset_DESeq2 <- DESeqDataSetFromMatrix(countData = TEP_DATA_filtered, colData = sinfo, design = ~ status_of_disease)
+dataset_DESeq2 <- DESeq(dataset_DESeq2)
+results_DESeq2 <- results(dataset_DESeq2, contrast = c("status_of_disease", "Cancer", "Healthy"))
+dataframe_of_results<- as.data.frame(results_DESeq2)
+dataframe_of_results$gene<- rownames(dataframe_of_results) #Add a column with the gene names 
+
+# Check for significant genes (adjusted p-value < 0.01)
+ordered_dataframe_of_results <- dataframe_of_results[order(dataframe_of_results$padj), ] #Lists the results by the order of adjusted p-value
+head(dataframe_of_results)
+summary(dataframe_of_results)
+
+# We only want to keep the significant genes
+sig_genes<- subset(ordered_dataframe_of_results, padj < 0.01 & abs(log2FoldChange)>1) #Subset the results to only keep significant genes with a log2 fold change greater than 1 or less than -1
+# Inspection
+dim(sig_genes)
+head(sig_genes)
+sig_gene_names <- sig_genes$gene
+# Currently at 4000 genes, if we need to shorten further i made two seperate lists (one containing all, one containing top 200 for presentation)
+top200_sig_gene_names <- sig_gene_names[1:min(200, length(sig_gene_names))] #Top 200 significant genes based on adjusted p-value and filtering through padj<0.01 and |log2|>1, selecting the first 200 genes
+length(sig_gene_names)
+length(top200_sig_gene_names)
+
+# DEA summary table
+DEAsummary<- data.frame(
+  significant_genes = nrow(sig_genes),
+  padj_cutoff = 0.01,
+  abs_log2FC_cutoff = 1
+)
+DEAsummary
+
+# Normalization of Data with DESeq2 results for PCA
+stab_data <- vst(dataset_DESeq2, blind= FALSE) # Stabilized Variance
+stab_matrix<- assay(stab_data) # Extract the normalizaed matrix from the DESeq2
+stab_matrix_sig_genes <- stab_matrix[sig_gene_names, ] # Subset the normalized matrix to only include ALL the significant genes
+stab_matrix_top200_sig_genes <- stab_matrix[top200_sig_gene_names, ] # Subset the normalized matrix to only include the top 200 significant genes
+
+# Transpose the matrix to carry out PCA
+PCAdata_all <- t(stab_matrix_sig_genes)
+PCAdata_top200 <- t(stab_matrix_top200_sig_genes)
+
+#JUSTINS PART
+
+#run PCA
+pca_all <- prcomp(PCAdata_all, scale = TRUE)
+pca_top200 <- prcomp(PCAdata_top200, scale = TRUE)
+
+# Inspect PCA
+summary(pca_all)
+summary(pca_top200)       
+
+# Scree plot 
+screeplot(pca_all, bstick = TRUE, npcs = length(pca_all$sdev), type = "lines")
+screeplot(pca_top200, bstick = TRUE, npcs = length(pca_top200$sdev), type = "lines")
+
+# Step 7: Test PC1 and PC2 using lm() and anova()
+# Extract PC scores as data frame with sample info (match rownames)
+pca_scores_all <- as.data.frame(pca_all$x)
+pca_scores_all$sname <- rownames(pca_scores_all)
+pca_scores_all <- merge(pca_scores_all, sinfo, by = "row.names")  # sinfo has rownames as sname                                                               
+
+# For top200
+pca_scores_top200 <- as.data.frame(pca_top200$x)
+pca_scores_top200$sname <- rownames(pca_scores_top200)
+pca_scores_top200 <- merge(pca_scores_top200, sinfo, by = "row.names")
+
+lm_pc1_all <- lm(PC1 ~ status_of_disease, data = pca_scores_all)
+anova(lm_pc1_all)
+summary(lm_pc1_all)
+
+lm_pc2_all <- lm(PC2 ~ status_of_disease, data = pca_scores_all)
+anova(lm_pc2_all)
+
+# Repeat for type_of_cancer
+#lm_pc1_type_all <- lm(PC1 ~ type_of_cancer, data = pca_scores_all)
+#anova(lm_pc1_type_all)
+
+# Same for top200
+lm_pc1_top200 <- lm(PC1 ~ status_of_disease, data = pca_scores_top200)
+anova(lm_pc1_top200)
+summary(lm_pc1_top200)
+
+lm_pc2_top200 <- lm(PC2 ~ status_of_disease, data = pca_scores_top200)
+anova(lm_pc2_top200)
+summary(lm_pc2_top200)
+
+# biplot
+biplot(pca_all)
+biplot(pca_top200)
+
+# Step 8: Fixed clustering on PCA scores 
+# For all sig genes
+pc_data_cluster_all <- pca_scores_all[, c("PC1", "PC2", "PC3", "PC4", "PC5")]  # Numeric PCs only; adjust as needed
+dist_matrix_all <- dist(pc_data_cluster_all)
+hclust_all <- hclust(dist_matrix_all, method = "ward.D2")
+plot(hclust_all)
+clusters_all <- cutree(hclust_all, k = 4)  # Adjust k based on dendrogram
+
+# For top200
+pc_data_cluster_top200 <- pca_scores_top200[, c("PC1", "PC2", "PC3", "PC4", "PC5")]
+dist_matrix_top <- dist(pc_data_cluster_top200)
+hclust_top <- hclust(dist_matrix_top, method = "ward.D2")
+plot(hclust_top)
+clusters_top <- cutree(hclust_top, k = 4)
+
+# Optional: Add clusters back to scores for summary
+pca_scores_top200$cluster <- clusters_top
+table(pca_scores_top200$cluster, pca_scores_top200$status_of_disease)
+
+
+# kmeans
+kmeans_all <- kmeans(pc_data_cluster_all, centers = 4)
+table(kmeans_all$cluster, pca_scores_all$status_of_disease)
+
+#Step 9: Make a heatmap (of original sig genes expression, with sample clustering)
+# Use pheatmap on normalized sig genes matrix (not transposed)
+pheatmap(stab_matrix_sig_genes,
+         scale = "row",  # Row z-score common for genes
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         annotation_col = sinfo[, c("status_of_disease", "type_of_cancer")],
+         main = "Heatmap of Significant Genes", )
+
+# Ensure colnames(stab_matrix_top200_sig_genes) == rownames(sinfo)
+annotation_col <- sinfo[colnames(stab_matrix_top200_sig_genes), c("status_of_disease", "type_of_cancer")]
+print("Annotation dim:")
+print(dim(annotation_col))  # Should match ncol(matrix) x 2
+
+pheatmap(stab_matrix_top200_sig_genes,
+         scale = "row",
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         annotation_col = annotation_col,
+         show_rownames = FALSE,
+         show_colnames = FALSE,
+         main = "Top 200 Significant Genes Heatmap",
+         fontsize_row = 8)
+
+
+top50_genes <- rownames(stab_matrix_top200_sig_genes)[1:50]
+pheatmap(stab_matrix_top50_sig_genes <- stab_matrix_top200_sig_genes[top50_genes, ],
+         scale = "row",
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         annotation_col = sinfo[colnames(stab_matrix_top50_sig_genes), c("status_of_disease", "type_of_cancer")],
+         show_rownames = FALSE,
+         fontsize = 10,
+         main = "Top 50 Sig Genes")
+                                                                                                                              
+                                                               
